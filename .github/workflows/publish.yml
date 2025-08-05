@@ -15,7 +15,7 @@ jobs:
   publish-node:
     name: Publish Custom Node to registry
     runs-on: ubuntu-latest
-    if: ${{ github.repository_owner == 'MoonGoblinDev' }}
+    if: ${{ github.repository_owner == 'Kx501' }}
     steps:
       - name: Check out code
         uses: actions/checkout@v4

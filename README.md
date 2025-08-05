@@ -1,15 +1,26 @@
-# Civicomfy - Civitai Model Downloader for ComfyUI
+# Civicomfy - ComfyUI Civitai Downloader Extension
 
-Civicomfy seamlessly integrates Civitai's vast model repository directly into ComfyUI, allowing you to search, download, and organize AI models without leaving your workflow.
+一个用于ComfyUI的Civitai模型下载器扩展，支持从Civitai.com下载各种模型。
 
-## Features
+Fork from [MoonGoblinDev/Civicomfy](https://github.com/MoonGoblinDev/Civicomfy)
 
-- **Integrated Model Search**: Search Civitai's extensive library directly from ComfyUI
-- **One-Click Downloads**: Download models with associated metadata and thumbnails
-- **Automatic Organization**: Models are automatically saved to their appropriate directories
-- **Clean UI**: Clean, intuitive interface that complements ComfyUI's aesthetic
+## 功能特性
 
-## Installation
+### 最新更新
+- ✅ **支持相对路径的自定义文件名**: 现在可以在自定义文件名中使用相对路径，例如 `subfolder/model_name.safetensors`
+- ✅ **完整的中文界面**: 已汉化所有用户界面元素
+- ✅ **智能路径创建**: 自动创建自定义子目录
+- ✅ **文件扩展名处理**: 自动处理文件扩展名
+
+### 核心功能
+- 🔄 **多线程下载**: 支持并发下载多个模型
+- 📁 **智能文件组织**: 根据选择的模型类型自动保存
+- 🔍 **模型搜索**: 集成Civitai搜索功能
+- 📊 **下载状态监控**: 实时显示下载进度和状态
+- 🎨 **用户友好界面**: 现代化的Web界面
+- ⚙️ **可配置设置**: 支持API密钥和默认设置
+
+## 安装
 
 Git clone
 ```bash
@@ -17,36 +28,26 @@ cd ComfyUI/custom_nodes
 git clone https://github.com/MoonGoblinDev/Civicomfy.git
 ```
 
-Comfy-CLI
-```bash
-comfy node registry-install civicomfy
-```
+手动安装：
+1. 将整个文件夹复制到ComfyUI的`custom_nodes`目录
+2. 重启ComfyUI
+3. 在ComfyUI界面中找到"Civicomfy"按钮
 
-ComfyUI Manager
+## 使用方法
 
-<img width="813" alt="Screenshot 2025-04-08 at 11 42 46" src="https://github.com/user-attachments/assets/5d4f5261-88f6-4aa0-9c66-d1811bb49e09" />
+### 自定义文件名功能
+现在支持在自定义文件名中使用相对路径：
+- `my_model.safetensors` - 保存在默认目录
+- `anime/my_model.safetensors` - 保存在anime子目录
+- `characters/waifu/model.safetensors` - 创建多层子目录
 
-## Usage
+## 截图
 
-1. Start ComfyUI with Civicomfy installed
-2. Access the Civicomfy panel from the Civicomfy menu button at the right top area.
-3. Search for models
-4. Click the download button on any model to save it to your local installation
-5. Models become immediately available in ComfyUI nodes
-
-## Configuration
-
-- Enter your Civitai API Token in the setting
-
-## Screenshots
 <img width="911" alt="Screenshot 2025-04-08 at 11 24 40" src="https://github.com/user-attachments/assets/b9be0c32-729d-490e-be61-2dc072cd9b15" />
 <img width="911" alt="Screenshot 2025-04-08 at 11 23 17" src="https://github.com/user-attachments/assets/cb747c22-afd0-4baf-a9a2-39c70fb11e46" />
 <img width="911" alt="Screenshot 2025-04-08 at 11 25 15" src="https://github.com/user-attachments/assets/02b6d841-a0fa-484c-91a4-4095a7554c3f" />
 <img width="911" alt="Screenshot 2025-04-08 at 11 25 24" src="https://github.com/user-attachments/assets/20fcfcb5-3345-4a72-89fe-ee9c50626ebc" />
 
+## 许可证
 
-
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
+MIT License

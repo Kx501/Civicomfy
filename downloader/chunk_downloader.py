@@ -83,7 +83,7 @@ class ChunkDownloader:
         if not self.is_cancelled:
             print(f"[Downloader {self.download_id or 'N/A'}] Cancellation requested by user.")
             self.cancel_event.set()
-            self.error = "Download cancelled by user"
+            self.error = "用户取消下载"
             if self.manager and self.download_id:
                 self.manager._update_download_status(self.download_id, status="cancelled", error=self.error)
 
