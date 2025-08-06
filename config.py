@@ -22,7 +22,7 @@ PLUGIN_ROOT = os.path.dirname(os.path.realpath(__file__))
 WEB_DIRECTORY = os.path.join(PLUGIN_ROOT, "web")
 JAVASCRIPT_PATH = os.path.join(WEB_DIRECTORY, "js")
 CSS_PATH = os.path.join(WEB_DIRECTORY, "css")
-PLACEHOLDER_IMAGE_PATH = os.path.join(WEB_DIRECTORY, "/images/placeholder.jpeg")
+PLACEHOLDER_IMAGE_PATH = os.path.join(WEB_DIRECTORY, "images", "placeholder.jpeg")
 
 # Get ComfyUI directories using folder_paths
 COMFYUI_ROOT_DIR = folder_paths.base_path
@@ -60,7 +60,7 @@ CIVITAI_API_TYPE_MAP = {
     "locon": "LoCon",
     "lycoris": "LORA", # Civitai might group LyCORIS under LORA search type
     "vae": "VAE",
-    "embedding": "TextualInversion",
+    "embedding": "Embedding",
     "hypernetwork": "Hypernetwork",
     "controlnet": "Controlnet",
     "motionmodule": "MotionModule",

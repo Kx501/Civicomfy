@@ -40,6 +40,30 @@ AVAILABLE_MEILI_BASE_MODELS = [
 
 # --- Helper Functions ---
 
+def _get_file_sort_key(file_obj):
+    """Common file sorting logic for selecting primary files."""
+    if not isinstance(file_obj, dict): 
+        return 99
+    if not file_obj.get('downloadUrl'): 
+        return 98
+    
+    name_lower = file_obj.get("name", "").lower()
+    meta = file_obj.get("metadata", {}) or {}
+    format_type = meta.get("format", "").lower()
+    size_type = meta.get("size", "").lower()
+    
+    is_safetensor = ".safetensors" in name_lower or format_type == "safetensor"
+    is_pickle = ".ckpt" in name_lower or ".pt" in name_lower or format_type == "pickletensor"
+    is_pruned = size_type == "pruned"
+    
+    if is_safetensor and is_pruned: return 0
+    if is_safetensor: return 1
+    if is_pickle and is_pruned: return 2
+    if is_pickle: return 3
+    if file_obj.get("type") == "Model": return 4
+    if file_obj.get("type") == "Pruned Model": return 5
+    return 10
+
 async def _get_request_json(request):
     """Safely get JSON data from request."""
     try:
@@ -185,26 +209,8 @@ async def _get_civitai_model_and_version_details(api: CivitaiAPI, model_url_or_i
     # Find primary file (using the same sorting logic as before)
     primary_file = next((f for f in files if isinstance(f, dict) and f.get("primary") and f.get('downloadUrl')), None)
     if not primary_file:
-        def sort_key(file_obj):  # Identical sort key logic
-            if not isinstance(file_obj, dict): return 99
-            if not file_obj.get('downloadUrl'): return 98
-            name_lower = file_obj.get("name", "").lower();
-            meta = file_obj.get("metadata", {}) or {};
-            format_type = meta.get("format", "").lower();
-            size_type = meta.get("size", "").lower()
-            is_safetensor = ".safetensors" in name_lower or format_type == "safetensor";
-            is_pickle = ".ckpt" in name_lower or ".pt" in name_lower or format_type == "pickletensor";
-            is_pruned = size_type == "pruned"
-            if is_safetensor and is_pruned: return 0;  # type: ignore
-            if is_safetensor: return 1;  # type: ignore
-            if is_pickle and is_pruned: return 2;  # type: ignore
-            if is_pickle: return 3;  # type: ignore
-            if file_obj.get("type") == "Model": return 4;  # type: ignore
-            if file_obj.get("type") == "Pruned Model": return 5;  # type: ignore
-            return 10  # type: ignore
-
         valid_files = [f for f in files if isinstance(f, dict) and f.get("downloadUrl")]
-        sorted_files = sorted(valid_files, key=sort_key)
+        sorted_files = sorted(valid_files, key=_get_file_sort_key)
         primary_file = sorted_files[0] if sorted_files else None
 
     if not primary_file or not isinstance(primary_file, dict) or not primary_file.get('downloadUrl'):
@@ -287,22 +293,34 @@ async def route_get_model_details(request):
         thumbnail_url = None
         images = version_info.get("images")  # Get the images list from the version info
 
-        # Check if images list exists, is a list, has items, and the first item is valid with a URL
-        if images and isinstance(images, list) and len(images) > 0 and \
-                isinstance(images[0], dict) and images[0].get("url"):
-            # Use the URL of the very first image directly
-            thumbnail_url = images[0]["url"]
-            print(f"[Get Details Route] Using first image URL as thumbnail: {thumbnail_url}")
+        # Check if images list exists, is a list, has items
+        if images and isinstance(images, list) and len(images) > 0:
+            # Filter out video files and find the first suitable image
+            import re
+            video_pattern = re.compile(r'\.(webm|mp4|avi|mov|mkv|flv|wmv|m4v|3gp|ogv)$', re.IGNORECASE)
+
+            suitable_images = []
+            for image in images:
+                if isinstance(image, dict) and image.get("url"):
+                    if not video_pattern.search(image["url"]):
+                        suitable_images.append(image)
+
+            if suitable_images:
+                # Use the first non-video image
+                thumbnail_url = suitable_images[0]["url"]
+                print(f"[Get Details Route] Using first non-video image URL as thumbnail: {thumbnail_url}")
+            else:
+                print("[Get Details Route] No suitable non-video images found, falling back to placeholder.")
+                # Fallback placeholder logic
+                thumbnail_url = "/extensions/Civicomfy/images/placeholder.jpeg"  # Use absolute path for frontend
         else:
-            print("[Get Details Route] No valid first image found in version info, falling back to placeholder.")
-            # Fallback placeholder logic (remains the same)
-            placeholder_filename = os.path.basename(PLACEHOLDER_IMAGE_PATH) if PLACEHOLDER_IMAGE_PATH else "placeholder.jpeg"
-            thumbnail_url = f"./{placeholder_filename}"  # Relative path for JS to resolve
+            print("[Get Details Route] No valid images found in version info, falling back to placeholder.")
+            # Fallback placeholder logic
+            thumbnail_url = "/extensions/Civicomfy/images/placeholder.jpeg"  # Use absolute path for frontend
 
         # Fallback placeholder if no thumbnail found
         if not thumbnail_url:
-            placeholder_filename = os.path.basename(PLACEHOLDER_IMAGE_PATH) if PLACEHOLDER_IMAGE_PATH else "placeholder.jpeg"
-            thumbnail_url = f"./{placeholder_filename}"  # Relative path for JS
+            thumbnail_url = "/extensions/Civicomfy/images/placeholder.jpeg"  # Use absolute path for frontend
 
         # --- Return curated data ---
         return web.json_response({
@@ -523,32 +541,9 @@ async def route_download_model(request):
         primary_file = next((f for f in files if isinstance(f, dict) and f.get("primary") and f.get('downloadUrl')), None)
 
         if not primary_file:
-            # Sort by type preference (safetensors > pickle), then maybe size?
-            def sort_key(file_obj):
-                if not isinstance(file_obj, dict): return 99
-                if not file_obj.get('downloadUrl'): return 98  # Deprioritize files without URL
-
-                name_lower = file_obj.get("name", "").lower()
-                meta = file_obj.get("metadata", {}) or {}
-                format_type = meta.get("format", "").lower()
-                size_type = meta.get("size", "").lower()
-                # Fallback to file extension if format metadata missing
-                is_safetensor = ".safetensors" in name_lower or format_type == "safetensor"
-                is_pickle = ".ckpt" in name_lower or ".pt" in name_lower or format_type == "pickletensor"
-                is_pruned = size_type == "pruned"
-
-                if is_safetensor and is_pruned: return 0
-                if is_safetensor: return 1
-                if is_pickle and is_pruned: return 2
-                if is_pickle: return 3
-                # Prioritize model files over others like VAEs if type is available
-                if file_obj.get("type") == "Model": return 4
-                if file_obj.get("type") == "Pruned Model": return 5
-                return 10  # Other types last
-
             valid_files = [f for f in files if isinstance(f, dict) and f.get("downloadUrl")]
-            sorted_files = sorted(valid_files, key=sort_key)
-            primary_file = sorted_files[0] if sorted_files else None  # Assign to broader scope var
+            sorted_files = sorted(valid_files, key=_get_file_sort_key)
+            primary_file = sorted_files[0] if sorted_files else None
 
         if not primary_file:
             raise web.HTTPNotFound(reason=f"Could not find any file with a valid download URL for version {target_version_id}.")
@@ -565,6 +560,9 @@ async def route_download_model(request):
 
         # *** Get the download URL directly from the file object ***
         download_url = primary_file.get("downloadUrl")
+
+        # Note: API key will be passed via Authorization header in the downloader
+        # Don't modify the URL here, let the downloader handle authentication
         print(f"[Server Download] Using Download URL: {download_url}")
 
         # --- Determine Filename and Output Path ---
@@ -575,12 +573,14 @@ async def route_download_model(request):
             base, ext = os.path.splitext(custom_filename)
             sanitized_base = sanitize_filename(base, default_filename=f"model_{target_model_id}_custom")
 
+            # Use API extension if available and seems valid, otherwise guess
+            valid_extensions = {'.safetensors', '.ckpt', '.pt', '.bin', '.pth', '.onnx', '.yaml', '.vae.pt', '.diffusers', '.json',
+                                '.txt', '.zip', '.csv', 'yaml'}  # Added common text/archive types
+            
             # Add original extension if custom name lacks one, or ensure it's valid
             if not ext:
                 _, api_ext = os.path.splitext(api_filename)
-                # Use API extension if available and seems valid, otherwise guess
-                valid_extensions = {'.safetensors', '.ckpt', '.pt', '.bin', '.pth', '.onnx', '.yaml', '.vae.pt', '.diffusers', '.json',
-                                    '.txt', '.zip', '.csv', 'yaml'}  # Added common text/archive types
+
                 if api_ext and api_ext.lower() in valid_extensions:
                     ext = api_ext
                 else:
@@ -605,6 +605,74 @@ async def route_download_model(request):
             final_filename = sanitize_filename(api_filename)
             if final_filename != api_filename:
                 print(f"[Server Download] Sanitized API filename from '{api_filename}' to '{final_filename}'")
+
+        # --- Auto-detect model type from API data ---
+        # Always try to detect the correct model type from API data
+        detected_type = "checkpoint"  # Default fallback to checkpoint
+
+        # Try to detect from model info
+        if model_info:
+            model_type = model_info.get("type")
+            if model_type:
+                # Map Civitai API type to internal key
+                type_mapping = {
+                    "Checkpoint": "checkpoint",
+                    "LORA": "lora",
+                    "LoCon": "locon",
+                    "LyCORIS": "lycoris",
+                    "VAE": "vae",
+                    "Embedding": "embedding",
+                    "TextualInversion": "embedding",
+                    "Hypernetwork": "hypernetwork",
+                    "Controlnet": "controlnet",
+                    "MotionModule": "motionmodule",
+                    "Poses": "poses",
+                    "Wildcards": "wildcards",
+                    "Upscaler": "upscaler"
+                }
+                detected_type = type_mapping.get(model_type, "checkpoint")
+                print(f"[Server Download] Auto-detected model type: {model_type} -> {detected_type}")
+
+        # If still default, try to detect from file metadata
+        if detected_type == "checkpoint" and primary_file:
+            file_metadata = primary_file.get("metadata", {}) or {}
+            file_type = primary_file.get("type", "")
+            file_name = primary_file.get("name", "").lower()
+
+            # Define type detection patterns (order matters for priority)
+            type_patterns = [
+                ("vae", ["vae", "VAE"]),
+                ("lycoris", ["lycoris"]),  # Check lycoris before lora
+                ("lora", ["lora"]),
+                ("locon", ["locon"]),
+                ("controlnet", ["controlnet", "control"]),
+                ("embedding", ["embedding", "textual"]),
+                ("hypernetwork", ["hypernetwork"]),
+                ("upscaler", ["upscaler", "upscale"]),
+                ("motionmodule", ["motion"]),
+                ("poses", ["pose"]),
+                ("wildcards", ["wildcard"]),
+                ("checkpoint", ["checkpoint", "model"])  # Default fallback
+            ]
+
+            # Check file type first
+            if file_type == "Model":
+                detected_type = "checkpoint"
+            else:
+                # Check filename patterns
+                for model_type, patterns in type_patterns:
+                    if any(pattern in file_name for pattern in patterns):
+                        detected_type = model_type
+                        break
+
+            print(f"[Server Download] Auto-detected from file: {detected_type} (type: {file_type}, name: {file_name})")
+
+        # Use detected type (override user selection if it's the default checkpoint)
+        if model_type_key == "checkpoint":
+            model_type_key = detected_type
+            print(f"[Server Download] Using auto-detected model type: {model_type_key}")
+        else:
+            print(f"[Server Download] Using user-selected model type: {model_type_key}")
 
         # Get the target directory based on the user's selected 'model_type_key'
         output_dir = get_model_dir(model_type_key)
@@ -722,8 +790,10 @@ async def route_download_model(request):
         thumbnail_url = None
         images = version_info.get("images")
         if images and isinstance(images, list) and len(images) > 0:
-            # Ensure images are dictionaries with URLs
-            valid_images = [img for img in images if isinstance(img, dict) and img.get("url")]
+            # Ensure images are dictionaries with URLs and filter out video files
+            import re
+            video_pattern = re.compile(r'\.(webm|mp4|avi|mov|mkv|flv|wmv|m4v|3gp|ogv)$', re.IGNORECASE)
+            valid_images = [img for img in images if isinstance(img, dict) and img.get("url") and not video_pattern.search(img["url"])]
             # Sort by index if available, falling back to 0
             sorted_images = sorted(valid_images, key=lambda x: x.get('index', 0))
             # Try to find first image of type 'image' with explicit width (often better quality previews)
@@ -880,8 +950,7 @@ async def route_cancel_download(request):
 
 @prompt_server.routes.post("/civitai/search")
 async def route_search_models(request):
-    """API Endpoint for searching models using Civitai's Meilisearch."""
-    api_key = None  # Meili might not use the standard key
+    """API Endpoint for searching models using Civitai's API."""
     try:
         data = await _get_request_json(request)
 
@@ -889,23 +958,22 @@ async def route_search_models(request):
         model_type_keys = data.get("model_types", [])  # e.g., ["lora", "checkpoint"] (frontend internal keys)
         base_model_filters = data.get("base_models", [])  # e.g., ["SD 1.5", "Pony"]
         sort = data.get("sort", "Most Downloaded")  # Frontend display value
-        # Make period optional or remove if not supported by Meili sort directly
-        # period = data.get("period", "AllTime")
-        limit = int(data.get("limit", 20))
+        limit = int(data.get("limit", 10))  # Fixed at 10 items per page
         page = int(data.get("page", 1))
+        total_items = int(data.get("total_items", 20))  # Total items to fetch
         api_key = data.get("api_key", "")  # Keep for potential future use or different endpoints
-        nsfw = data.get("nsfw", None)  # Expect Boolean or None
+        nsfw = data.get("nsfw", False)  # Default to False for NSFW filtering
 
-        if not query and not model_type_keys and not base_model_filters:
-            raise web.HTTPBadRequest(reason="Search requires a query or at least one filter (type or base model).")
+        # Allow search without query or filters - will return popular models
+        # if not query and not model_type_keys and not base_model_filters:
+        #     raise web.HTTPBadRequest(reason="Search requires a query or at least one filter (type or base model).")
 
-        # Instantiate API - API key might not be needed for Meili public search
+        # Instantiate API
         api = CivitaiAPI(api_key or None)
 
-        # --- Prepare Filters for Meili API call ---
+        # --- Prepare Filters for API call ---
 
-        # 1. Map internal type keys to Civitai API 'type' names (used in Meili filter)
-        # This assumes Meili filters on the uppercase names like "LORA", "Checkpoint"
+        # 1. Map internal type keys to Civitai API 'type' names
         api_types_filter = []
         if isinstance(model_type_keys, list) and model_type_keys and "any" not in model_type_keys:
             for key in model_type_keys:
@@ -916,118 +984,226 @@ async def route_search_models(request):
                 if api_type and api_type not in api_types_filter:
                     api_types_filter.append(api_type)
 
-        # 2. Base Model Filters (assume frontend sends exact names like "SD 1.5")
+        # 2. Base Model Filters
         valid_base_models = []
         if isinstance(base_model_filters, list) and base_model_filters:
-            # Optional: Validate against known list?
             valid_base_models = [bm for bm in base_model_filters if isinstance(bm, str) and bm]
-            # Example validation (optional):
-            # valid_base_models = [bm for bm in base_model_filters if bm in AVAILABLE_MEILI_BASE_MODELS]
-            # if len(valid_base_models) != len(base_model_filters):
-            #     print("Warning: Some provided base model filters were invalid.")
 
-        # --- Call the New API Method ---
+        # 3. Map sort options to API format
+        sort_mapping = {
+            "Relevancy": "Highest Rated",  # Default for relevancy
+            "Most Downloaded": "Most Downloaded",
+            "Highest Rated": "Highest Rated",
+            "Most Liked": "Highest Rated",  # Map to highest rated as closest
+            "Most Discussed": "Highest Rated",  # Map to highest rated as closest
+            "Most Collected": "Highest Rated",  # Map to highest rated as closest
+            "Most Buzz": "Highest Rated",  # Map to highest rated as closest
+            "Newest": "Newest",
+        }
+        api_sort = sort_mapping.get(sort, "Most Downloaded")
+
+        # --- Use Official API Only ---
+        if not api_key:
+            raise web.HTTPBadRequest(reason="API key is required for search")
+
+        # Handle pagination for all searches
+        effective_page = page
+
         print(
-            f"[Server Search] Meili: query='{query if query else '<none>'}', types={api_types_filter or 'Any'}, baseModels={valid_base_models or 'Any'}, sort={sort}, nsfw={nsfw}, limit={limit}, page={page}")
+            f"[Server Search] Official API: query='{query if query else '<none>'}', types={api_types_filter or 'Any'}, baseModels={valid_base_models or 'Any'}, sort={api_sort}, nsfw={nsfw}, limit={limit}, page={effective_page}, total_items={total_items}")
+        print(f"[Server Search] Calling API with limit={limit}, page={effective_page}")
 
-        # Call the new search method
-        meili_results = api.search_models_meili(
-            query=query or None,  # Meili handles empty query if filters exist
-            types=api_types_filter or None,
-            base_models=valid_base_models or None,
-            sort=sort,  # Pass the frontend value, mapping happens inside search_models_meili
-            limit=limit,
-            page=page,
-            nsfw=nsfw
-        )
+        # Handle different pagination strategies based on whether there's a query
+        if query:
+            # For query searches, use cursor-based pagination
+            # We can only get one page at a time, so we'll limit to what we can get
+            page_results = api.search_models(
+                query=query or None,
+                types=api_types_filter or None,
+                base_models=valid_base_models or None,
+                sort=api_sort,
+                limit=total_items,  # Request all items we want in one call
+                page=None,  # Don't pass page parameter for query searches
+                nsfw=nsfw
+            )
 
-        # Handle API error response from CivitaiAPI helper
-        if meili_results and isinstance(meili_results, dict) and "error" in meili_results:
-            status_code = meili_results.get("status_code", 500) or 500
-            reason = f"Civitai API Meili Search Error: {meili_results.get('details', meili_results.get('error', 'Unknown error'))}"
-            error_body = json.dumps(meili_results)
-            if status_code == 400:
-                raise web.HTTPBadRequest(reason=reason, body=error_body)
-            elif status_code == 401:
-                raise web.HTTPUnauthorized(reason=reason, body=error_body)
-            elif status_code == 403:
-                raise web.HTTPForbidden(reason=reason, body=error_body)
-            elif status_code == 404:
-                raise web.HTTPNotFound(reason=reason, body=error_body)
+            if page_results and "items" in page_results:
+                all_items = page_results.get("items", [])
             else:
-                raise web.HTTPInternalServerError(reason=reason, body=error_body)
-
-        # --- Process Meili Response for Frontend ---
-        if meili_results and isinstance(meili_results, dict) and "hits" in meili_results:
-            processed_items = []
-            image_base_url = "https://image.civitai.com/xG1nkqKTMzGDvpLrqFT7QA"  # Base URL for images
-
-            for hit in meili_results.get("hits", []):
-                if not isinstance(hit, dict): continue  # Skip invalid hits
-
-                thumbnail_url = None
-                # Get thumbnail from images array (prefer first image)
-                images = hit.get("images")
-                if images and isinstance(images, list) and len(images) > 0:
-                    first_image = images[0]
-                    # Ensure first image is a dict with a 'url' field
-                    if isinstance(first_image, dict) and first_image.get("url"):
-                        image_id = first_image["url"]
-                        # Construct URL with a default width (e.g., 256 or 450)
-                        thumbnail_url = f"{image_base_url}/{image_id}/width=256"  # Adjust width as needed
-
-                # Extract latest version info (Meili response includes 'version' object for the primary version)
-                latest_version_info = hit.get("version", {}) or {}  # Ensure it's a dict
-
-                # Prepare item structure for frontend (can pass raw hit + extras, or build a specific structure)
-                # Let's pass the raw `hit` and add the `thumbnailUrl` and potentially other processed fields.
-                hit['thumbnailUrl'] = thumbnail_url  # Add processed thumbnail URL directly to the hit object
-
-                # Optional: Add more processed fields if needed, e.g., formatted stats
-                # hit['processedStats'] = { ... }
-
-                processed_items.append(hit)
-
-            # --- Calculate Pagination Info ---
-            total_hits = meili_results.get("estimatedTotalHits", 0)
-            current_page = page  # Use the requested page number
-            total_pages = math.ceil(total_hits / limit) if limit > 0 else 0
-
-            # --- Return Structure for Frontend ---
-            response_data = {
-                "items": processed_items,  # The array of processed hits
-                "metadata": {
-                    "totalItems": total_hits,
-                    "currentPage": current_page,
-                    "pageSize": limit,  # The limit used for the request
-                    "totalPages": total_pages,
-                    # Meili provides offset, limit, processingTimeMs which could also be passed if useful
-                    "meiliProcessingTimeMs": meili_results.get("processingTimeMs"),
-                    "meiliOffset": meili_results.get("offset"),
-                }
-            }
-            return web.json_response(response_data)
+                all_items = []
         else:
-            # Handle unexpected format from API or empty results
-            print(f"[Server Search] Warning: Unexpected Meili search result format or empty hits: {meili_results}")
-            return web.json_response(
-                {"items": [], "metadata": {"totalItems": 0, "currentPage": page, "pageSize": limit, "totalPages": 0}}, status=500)
+            # For browsing mode (no query), use page-based pagination
+            all_items = []
+            current_page = 1
+            items_fetched = 0
 
-    # --- Keep existing error handlers ---
+            while items_fetched < total_items:
+                # Calculate how many items to request for this page
+                items_to_request = min(100, total_items - items_fetched)  # Use max 100 per API call
+
+                # Call API for current page
+                page_results = api.search_models(
+                    query=query or None,
+                    types=api_types_filter or None,
+                    base_models=valid_base_models or None,
+                    sort=api_sort,
+                    limit=items_to_request,
+                    page=current_page,
+                    nsfw=nsfw
+                )
+
+                if not page_results or "items" not in page_results:
+                    break
+
+                page_items = page_results.get("items", [])
+                if not page_items:
+                    break
+
+                all_items.extend(page_items)
+                items_fetched += len(page_items)
+                current_page += 1
+
+                # If we got fewer items than requested, we've reached the end
+                if len(page_items) < items_to_request:
+                    break
+
+        # Return all items to frontend for client-side pagination
+        official_results = {
+            "items": all_items,
+            "metadata": {
+                "currentPage": 1,
+                "pageSize": limit,
+                "totalItems": len(all_items),
+                "totalPages": (len(all_items) + limit - 1) // limit
+            }
+        }
+
+        # Handle API error response
+        if official_results and isinstance(official_results, dict) and "error" in official_results:
+            status_code = official_results.get("status_code", 500) or 500
+            reason = f"Civitai Official API Search Error: {official_results.get('details', official_results.get('error', 'Unknown error'))}"
+            error_body = json.dumps(official_results)
+            
+            # Map status codes to HTTP exceptions
+            status_exceptions = {
+                400: web.HTTPBadRequest,
+                401: web.HTTPUnauthorized,
+                403: web.HTTPForbidden,
+                404: web.HTTPNotFound
+            }
+            
+            exception_class = status_exceptions.get(status_code, web.HTTPInternalServerError)
+            raise exception_class(reason=reason, body=error_body)
+
+        # Process official API response
+        if official_results and isinstance(official_results, dict) and "items" in official_results:
+            processed_items = []
+            filtered_items = []  # Store items that pass NSFW filter
+
+            for item in official_results.get("items", []):
+                if not isinstance(item, dict):
+                    continue
+
+                # Check model-level NSFW filter first
+                model_nsfw = item.get("nsfw", False)
+
+                # If NSFW is False, skip NSFW models
+                if not nsfw and model_nsfw:
+                    continue
+
+                # Get thumbnail from model versions
+                thumbnail_url = None
+                model_versions = item.get("modelVersions", [])
+                if model_versions and isinstance(model_versions, list) and len(model_versions) > 0:
+                    latest_version = model_versions[0]  # First version is usually the latest
+                    images = latest_version.get("images", [])
+                    if images and isinstance(images, list) and len(images) > 0:
+                        # Helper function to process image URL
+                        def process_image_url(url):
+                            if "/width=" in url:
+                                return re.sub(r"/width=\d+", "/width=256", url)
+                            elif "/blob/" in url:
+                                return url
+                            else:
+                                separator = "&" if "?" in url else "?"
+                                return f"{url}{separator}width=256"
+
+                        # Collect suitable images based on NSFW setting and video filtering
+                        import re
+                        video_pattern = re.compile(r'\.(webm|mp4|avi|mov|mkv|flv|wmv|m4v|3gp|ogv)$', re.IGNORECASE)
+                        
+                        suitable_images = []
+                        for image in images:
+                            if isinstance(image, dict) and image.get("url"):
+                                # Skip video files
+                                if video_pattern.search(image["url"]):
+                                    continue
+                                
+                                # Check image NSFW status
+                                image_nsfw = model_nsfw or image.get("nsfw", False)
+                                
+                                # Add to suitable images if NSFW setting matches
+                                if nsfw or not image_nsfw:
+                                    suitable_images.append(image)
+                        
+                        # Select the first suitable image
+                        if suitable_images:
+                            thumbnail_url = process_image_url(suitable_images[0]["url"])
+                        else:
+                            # No suitable images found
+                            thumbnail_url = None
+
+                # Add thumbnail URL to item
+                item['thumbnailUrl'] = thumbnail_url
+                processed_items.append(item)
+                filtered_items.append(item)  # Add to filtered list for final count
+
+            # Return official API response structure
+            metadata = official_results.get("metadata", {})
+
+            # Update metadata with filtered results count
+            filtered_count = len(filtered_items)
+            metadata.update({
+                "currentPage": 1,
+                "pageSize": limit,
+                "totalItems": filtered_count,
+                "totalPages": (filtered_count + limit - 1) // limit if filtered_count > 0 else 0
+            })
+
+            # Debug: Log the metadata to understand pagination
+            print(f"[Server Search] API Response metadata: {metadata}")
+            print(f"[Server Search] Processed {len(processed_items)} items, filtered to {filtered_count} items")
+
+            # Handle cursor-based pagination
+            # Add cursor information to help frontend with pagination
+            if metadata.get("nextCursor"):
+                metadata["hasNextPage"] = True
+            else:
+                metadata["hasNextPage"] = False
+
+            return web.json_response({
+                "items": filtered_items,  # Return filtered items instead of processed_items
+                "metadata": metadata
+            })
+
+        # If we get here, something went wrong with the API
+        raise web.HTTPInternalServerError(reason="Official API search failed")
+
     except web.HTTPError as http_err:
-        # ... (keep existing HTTP error handling) ...
+        # Re-raise known HTTP errors
+        print(f"[Server Search] HTTP Error: {http_err.status} {http_err.reason}")
         body_detail = ""
         try:
             body_detail = await http_err.text() if hasattr(http_err, 'text') else http_err.body.decode('utf-8',
                                                                                                        errors='ignore') if http_err.body else ""
-            if body_detail.startswith('{') and body_detail.endswith('}'): body_detail = json.loads(body_detail)
+            if body_detail.startswith('{') and body_detail.endswith('}'):
+                body_detail = json.loads(body_detail)
         except Exception:
             pass
         return web.json_response({"error": http_err.reason, "details": body_detail or "No details", "status_code": http_err.status},
                                  status=http_err.status)
 
     except Exception as e:
-        # ... (keep existing generic error handling) ...
         print("--- Unhandled Error in /civitai/search ---")
         traceback.print_exc()
         print("--- End Error ---")

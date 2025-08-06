@@ -30,7 +30,11 @@ class ChunkDownloader:
                  chunk_size: int = DEFAULT_CHUNK_SIZE, manager: 'DownloadManager' = None,
                  download_id: str = None, api_key: Optional[str] = None,
                  known_size: Optional[int] = None):
-        # URLs
+        # URLs - Add API key to URL if available
+        if api_key and url:
+            separator = "&" if "?" in url else "?"
+            url = f"{url}{separator}token={api_key}"
+        
         self.initial_url = url
         self.url = url
         
@@ -65,10 +69,9 @@ class ChunkDownloader:
         self._speed = 0
 
     def _get_request_headers(self, add_range: Optional[str] = None) -> Dict[str, str]:
-        """Constructs request headers with optional auth and range."""
+        """Constructs request headers with optional range."""
         headers = {}
-        if self.api_key:
-            headers["Authorization"] = f"Bearer {self.api_key}"
+        # Note: API key is passed via URL parameter, not Authorization header
         if add_range:
             headers['Range'] = add_range
         return headers

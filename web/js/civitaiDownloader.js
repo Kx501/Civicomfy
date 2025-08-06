@@ -259,7 +259,8 @@ class CivitaiDownloaderUI {
         this.statusInterval = null;
         this.statusData = { queue: [], active: [], history: [] };
         this.baseModels = [];
-        this.searchPagination = { currentPage: 1, totalPages: 1, limit: 20 }; // Consistent limit
+        this.searchPagination = { currentPage: 1, totalPages: 1, limit: 20 }; // Default limit, will be updated by applySettings
+        this.searchCache = { items: [], metadata: null, searchParams: null }; // Cache for search results
         this.settings = this.getDefaultSettings(); // Initialize with defaults first
         this.toastTimeout = null;
         this.modelPreviewDebounceTimeout = null;
@@ -278,7 +279,8 @@ class CivitaiDownloaderUI {
             numConnections: 1,
             defaultModelType: 'checkpoint',
             autoOpenStatusTab: true,
-            searchResultLimit: 10, // Added default
+            searchResultLimit: 20, // Default limit per page
+
             // Add other future settings here with defaults
         };
     }
@@ -333,10 +335,7 @@ class CivitaiDownloaderUI {
             // Ensure value is within bounds if loaded value is weird
             this.settingsConnectionsInput.value = Math.max(1, Math.min(16, this.settings.numConnections || 4));
         }
-        if (this.settingsDefaultTypeSelect) {
-            // This requires modelTypes to be populated first, handle in populateModelTypes or ensure order
-            this.settingsDefaultTypeSelect.value = this.settings.defaultModelType || 'checkpoint';
-        }
+
         if (this.settingsAutoOpenCheckbox) {
             this.settingsAutoOpenCheckbox.checked = this.settings.autoOpenStatusTab === true; // Explicit boolean check
         }
@@ -354,12 +353,9 @@ class CivitaiDownloaderUI {
             }
         }
 
-        // Apply search result limit if we add that setting
-        this.searchPagination.limit = this.settings.searchResultLimit || 10;
-        // Update placeholder if search limit setting exists
-        // if(this.settingsSearchResultLimitInput) {
-        //      this.settingsSearchResultLimitInput.value = this.searchPagination.limit;
-        // }
+        // Fixed page size of 10 items per page
+        this.searchPagination.limit = 10;
+        console.log("[Civicomfy] Fixed searchPagination.limit:", this.searchPagination.limit);
     }
 
     async initializeUI() {
@@ -431,28 +427,36 @@ class CivitaiDownloaderUI {
                     <div id="civitai-tab-search" class="civitai-downloader-tab-content">
                         <form id="civitai-search-form">
                             <div class="civitai-search-controls">
-                                <input type="text" id="civitai-search-query" class="civitai-input" placeholder="搜索Civitai..."> <!-- Remove required -->
-                                <select id="civitai-search-type" class="civitai-select">
-                                    <option value="any">任意类型</option>
-                                    <!-- Model types populated here -->
-                                </select>
-                                <!-- ADDED: Base Model Filter Dropdown -->
-                                <select id="civitai-search-base-model" class="civitai-select">
-                                    <option value="any">任意基础模型</option>
-                                    <!-- Base models populated here -->
-                                </select>
-                                <select id="civitai-search-sort" class="civitai-select">
-                                    <option value="Relevancy">相关性</option>
-                                    <option value="Highest Rated">最高评分</option>
-                                    <option value="Most Liked">最多点赞</option>
-                                    <option value="Most Discussed">最多讨论</option> 
-                                    <option value="Most Collected">最多收藏</option>
-                                    <option value="Most Buzz">最多热度</option>
-                                    <option value="Most Downloaded">最多下载</option>
-                                    <option value="Newest">最新</option>
-                                </select>
+                                <div class="civitai-search-row">
+                                    <input type="text" id="civitai-search-query" class="civitai-input" placeholder="搜索Civitai...">
+                                    <select id="civitai-search-type" class="civitai-select">
+                                        <option value="any">任意类型</option>
+                                        <!-- Model types populated here -->
+                                    </select>
+                                </div>
+                                <div class="civitai-search-row">
+                                    <select id="civitai-search-base-model" class="civitai-select">
+                                        <option value="any">任意基础模型</option>
+                                        <!-- Base models populated here -->
+                                    </select>
+                                    <select id="civitai-search-sort" class="civitai-select">
+                                        <option value="Highest Rated">最高评分</option>
+                                        <option value="Most Downloaded">最多下载</option>
+                                        <option value="Newest">最新</option>
+                                    </select>
+                                </div>
+                                <div class="civitai-search-row">
+                                    <div class="civitai-form-group">
+                                        <label for="civitai-search-total-items">最大条目数</label>
+                                        <input type="number" id="civitai-search-total-items" class="civitai-input" value="20" min="10" max="100" step="1">
+                                    </div>
+                                    <div class="civitai-form-group inline">
+                                        <input type="checkbox" id="civitai-search-nsfw" class="civitai-checkbox">
+                                        <label for="civitai-search-nsfw">显示NSFW内容</label>
+                                    </div>
+                                </div>
                             </div>
-                        <button type="submit" id="civitai-search-submit" class="civitai-button primary">搜索</button>
+                            <button type="submit" id="civitai-search-submit" class="civitai-button primary">搜索</button>
                         </form>
                         <div id="civitai-search-results" class="civitai-search-results">
                             <!-- Search results -->
@@ -503,10 +507,6 @@ class CivitaiDownloaderUI {
                                     <input type="number" id="civitai-settings-connections" class="civitai-input" value="1" min="1" max="16" step="1" required disabled>
                                     <p style="font-size: 0.85em; color: #bbb; margin-top: 5px;">已禁用。目前仅支持单连接</p>
                                 </div>
-                                <div class="civitai-form-group">
-                                    <label for="civitai-settings-default-type">默认模型类型（用于保存）</label>
-                                    <select id="civitai-settings-default-type" class="civitai-select" required></select>
-                                </div>
                              </div>
                             <div class="civitai-settings-section">
                                 <h4>界面和搜索</h4>
@@ -514,13 +514,8 @@ class CivitaiDownloaderUI {
                                     <input type="checkbox" id="civitai-settings-auto-open-status" class="civitai-checkbox">
                                     <label for="civitai-settings-auto-open-status">开始下载后切换到状态标签页</label>
                                 </div>
-                                <!-- Example: Add search result limit setting -->
-                                <!--
                                 <div class="civitai-form-group">
-                                    <label for="civitai-settings-search-limit">Search Results per Page</label>
-                                    <input type="number" id="civitai-settings-search-limit" class="civitai-input" value="10" min="5" max="50" step="5" required>
                                 </div>
-                                -->
                             </div>
                          </div>
                          <button type="submit" id="civitai-settings-save" class="civitai-button primary" style="margin-top: 20px;">保存设置</button>
@@ -569,7 +564,8 @@ class CivitaiDownloaderUI {
         this.searchTypeSelect = this.modal.querySelector('#civitai-search-type');
         this.searchBaseModelSelect = this.modal.querySelector('#civitai-search-base-model');
         this.searchSortSelect = this.modal.querySelector('#civitai-search-sort');
-        this.searchPeriodSelect = this.modal.querySelector('#civitai-search-period');
+        this.searchNsfwCheckbox = this.modal.querySelector('#civitai-search-nsfw');
+        this.searchTotalItemsInput = this.modal.querySelector('#civitai-search-total-items');
         this.searchSubmitButton = this.modal.querySelector('#civitai-search-submit');
         this.searchResultsContainer = this.modal.querySelector('#civitai-search-results');
         this.searchPaginationContainer = this.modal.querySelector('#civitai-search-pagination');
@@ -590,7 +586,6 @@ class CivitaiDownloaderUI {
         this.settingsForm = this.modal.querySelector('#civitai-settings-form');
         this.settingsApiKeyInput = this.modal.querySelector('#civitai-settings-api-key');
         this.settingsConnectionsInput = this.modal.querySelector('#civitai-settings-connections'); // Disabled for now
-        this.settingsDefaultTypeSelect = this.modal.querySelector('#civitai-settings-default-type');
         this.settingsAutoOpenCheckbox = this.modal.querySelector('#civitai-settings-auto-open-status');
         // this.settingsSearchResultLimitInput = this.modal.querySelector('#civitai-settings-search-limit'); // If limit setting added
         this.settingsSaveButton = this.modal.querySelector('#civitai-settings-save');
@@ -643,11 +638,16 @@ class CivitaiDownloaderUI {
             event.preventDefault();
             this.handleDownloadSubmit();
         });
-        this.modelUrlInput.addEventListener('input', () => {
+        // Helper function to handle model URL changes
+        const handleModelUrlChange = (delay = 500) => {
+            this.modelVersionIdInput.value = '';
+            this.debounceFetchDownloadPreview(delay);
+        };
+
+        this.modelUrlInput.addEventListener('input', () => handleModelUrlChange());
+        this.modelUrlInput.addEventListener('paste', () => handleModelUrlChange(0));
+        this.modelVersionIdInput.addEventListener('input', () => {
             this.debounceFetchDownloadPreview();
-        });
-        this.modelUrlInput.addEventListener('paste', () => {
-            this.debounceFetchDownloadPreview(0);
         });
         this.modelVersionIdInput.addEventListener('blur', () => {
             this.fetchAndDisplayDownloadPreview();
@@ -656,14 +656,7 @@ class CivitaiDownloaderUI {
         // Search form submission
         this.searchForm.addEventListener('submit', (event) => {
             event.preventDefault();
-            if (!this.searchQueryInput.value.trim() &&
-                this.searchTypeSelect.value === 'any' &&
-                this.searchBaseModelSelect.value === 'any') {
-                this.showToast("请输入搜索查询或选择类型/基础模型过滤器。", "error");
-                if (this.searchResultsContainer) this.searchResultsContainer.innerHTML = '<p>请输入搜索查询或选择过滤器。</p>';
-                if (this.searchPaginationContainer) this.searchPaginationContainer.innerHTML = '';
-                return;
-            }
+            // Allow search without query - just reset to page 1 and search
             this.searchPagination.currentPage = 1;
             this.handleSearchSubmit();
         });
@@ -840,11 +833,14 @@ class CivitaiDownloaderUI {
                 this.downloadConnectionsInput.value = this.settings.numConnections;
                 this.switchTab('download');
 
+                // Always set the detected model type, fallback to default if not found
                 if (this.downloadModelTypeSelect.querySelector(`option[value="${modelTypeInternalKey}"]`)) {
                     this.downloadModelTypeSelect.value = modelTypeInternalKey;
                     console.log(`Set download dropdown value AFTER switchTab to: ${modelTypeInternalKey}`);
                 } else {
-                    console.warn(`Target save type '${modelTypeInternalKey}' not found in dropdown after switchTab. Default '${defaultSaveTypeKey}' should be selected.`);
+                    // If detected type not found, use default
+                    this.downloadModelTypeSelect.value = defaultSaveTypeKey;
+                    console.warn(`Target save type '${modelTypeInternalKey}' not found in dropdown. Using default '${defaultSaveTypeKey}'.`);
                 }
                 this.showToast(`已填充模型ID ${modelId} 的下载表单。请检查保存位置。`, 'info', 4000);
                 this.fetchAndDisplayDownloadPreview();
@@ -878,13 +874,12 @@ class CivitaiDownloaderUI {
 
         // Pagination (using event delegation)
         this.searchPaginationContainer.addEventListener('click', (event) => {
-            // ... (Existing logic for pagination is fine using delegation) ...
             const button = event.target.closest('.civitai-page-button');
             if (button && !button.disabled) {
                 const page = parseInt(button.dataset.page, 10);
                 if (page && page !== this.searchPagination.currentPage) {
-                    this.searchPagination.currentPage = page;
-                    this.handleSearchSubmit();
+                    // Use cached results for pagination
+                    this.handleSearchPagination(page);
                 }
             }
         });
@@ -920,9 +915,7 @@ class CivitaiDownloaderUI {
         } else if (tabId === 'download') {
             // When switching to download tab, ensure dropdowns reflect current settings
             this.downloadConnectionsInput.value = this.settings.numConnections;
-            if (Object.keys(this.modelTypes).length > 0) { // Check if types are loaded
-                this.downloadModelTypeSelect.value = this.settings.defaultModelType;
-            }
+            // Don't reset model type selection - keep user's choice
         }
     }
 
@@ -941,7 +934,9 @@ class CivitaiDownloaderUI {
             // Clear existing options first
             this.downloadModelTypeSelect.innerHTML = '';
             this.searchTypeSelect.innerHTML = '<option value="any">任意类型</option>'; // Keep 'Any' for search
-            this.settingsDefaultTypeSelect.innerHTML = '';
+
+            // Add "Auto Detect" option to download dropdown
+            // Auto option removed - model type is now automatically detected
 
             // Populate dropdowns - Sort alphabetically by display name (value)
             const sortedTypes = Object.entries(this.modelTypes).sort((a, b) => a[1].localeCompare(b[1]));
@@ -953,7 +948,6 @@ class CivitaiDownloaderUI {
                 option.textContent = displayName;
 
                 this.downloadModelTypeSelect.appendChild(option.cloneNode(true));
-                this.settingsDefaultTypeSelect.appendChild(option.cloneNode(true));
 
                 // Add to search dropdown as well
                 this.searchTypeSelect.appendChild(option.cloneNode(true));
@@ -964,19 +958,10 @@ class CivitaiDownloaderUI {
             // Set default selected values based on loaded settings AFTER populating
             // Use try-catch as the stored setting might be invalid if types changed
             try {
-                if (this.settingsDefaultTypeSelect.querySelector(`option[value="${this.settings.defaultModelType}"]`)) {
-                    this.settingsDefaultTypeSelect.value = this.settings.defaultModelType;
-                } else {
-                    console.warn(`Saved default type "${this.settings.defaultModelType}" not found, using first option.`);
-                    this.settingsDefaultTypeSelect.selectedIndex = 0; // Fallback to first option
-                }
-            } catch (e) { console.error("Error setting default type in settings tab:", e); }
-
-            try {
                 if (this.downloadModelTypeSelect.querySelector(`option[value="${this.settings.defaultModelType}"]`)) {
                     this.downloadModelTypeSelect.value = this.settings.defaultModelType;
                 } else {
-                    this.downloadModelTypeSelect.selectedIndex = 0; // Fallback
+                    this.downloadModelTypeSelect.value = 'checkpoint'; // Fallback to checkpoint
                 }
             } catch (e) { console.error("Error setting default type in download tab:", e); }
 
@@ -984,10 +969,9 @@ class CivitaiDownloaderUI {
             console.error("[Civicomfy] Failed to get or populate model types:", error);
             this.showToast('加载模型类型失败', 'error');
             // Add placeholder default options if API fails
-            this.downloadModelTypeSelect.innerHTML = '<option value="checkpoint">检查点（默认）</option>';
+            this.downloadModelTypeSelect.innerHTML = '<option value="checkpoint">checkpoint（默认）</option>';
             this.searchTypeSelect.innerHTML = '<option value="any">任意类型</option>';
-            this.settingsDefaultTypeSelect.innerHTML = '<option value="checkpoint">检查点（默认）</option>';
-            this.modelTypes = { "checkpoint": "检查点（默认）" }; // Set minimal types
+            this.modelTypes = { "checkpoint": "checkpoint（默认）" }; // Set minimal types
         }
     }
 
@@ -1006,9 +990,13 @@ class CivitaiDownloaderUI {
 
         const params = {
             model_url_or_id: modelUrlOrId,
-            model_version_id: versionId ? parseInt(versionId, 10) : null,
             api_key: this.settings.apiKey // Send API key from settings
         };
+
+        // Only add version_id if it's explicitly provided and not empty
+        if (versionId && versionId.trim()) {
+            params.model_version_id = parseInt(versionId, 10);
+        }
 
         try {
             const result = await CivitaiDownloaderAPI.getModelDetails(params);
@@ -1044,8 +1032,55 @@ class CivitaiDownloaderUI {
         const descriptionHtml = data.description_html || '<p><em>没有描述。</em></p>';
         const version_description_html = data.version_description_html || '<p><em>没有描述。</em></p>';
         const fileInfo = data.file_info || {};
-        const thumbnail = data.thumbnail_url || PLACEHOLDER_IMAGE_URL; // Use placeholder if missing
+        let thumbnail = data.thumbnail_url || PLACEHOLDER_IMAGE_URL; // Use placeholder if missing
+
+        // Handle video files - skip them and use placeholder
+        if (thumbnail) {
+            const videoPattern = /\.(webm|mp4|avi|mov|mkv|flv|wmv|m4v|3gp|ogv)$/i;
+            if (videoPattern.test(thumbnail)) {
+                thumbnail = PLACEHOLDER_IMAGE_URL;
+            }
+        }
+
+        // Add cache busting parameter to prevent browser caching
+        if (thumbnail && thumbnail !== PLACEHOLDER_IMAGE_URL) {
+            const separator = thumbnail.includes('?') ? '&' : '?';
+            thumbnail = `${thumbnail}${separator}t=${Date.now()}`;
+        }
+
         const civitaiLink = `https://civitai.com/models/${modelId}${data.version_id ? '?modelVersionId=' + data.version_id : ''}`;
+
+        // Auto-detect and set model type in dropdown
+        let modelTypeInternalKey = null;
+        if (modelType && modelType !== 'N/A') {
+            // Map Civitai API types to internal keys
+            const typeMapping = {
+                "Checkpoint": "checkpoint",
+                "LORA": "lora",
+                "LoCon": "locon",
+                "VAE": "vae",
+                "TextualInversion": "embedding",
+                "LyCORIS": "lycoris",
+                "Embeddings": "embedding",
+                "Hypernetwork": "hypernetwork",
+                "Controlnet": "controlnet",
+                "MotionModule": "motionmodule",
+                "Poses": "poses",
+                "Wildcards": "wildcards",
+                "Upscaler": "upscaler"
+            };
+
+            modelTypeInternalKey = typeMapping[modelType] ||
+                Object.keys(this.modelTypes).find(key =>
+                    (this.modelTypes[key]?.toLowerCase() === modelType?.toLowerCase()) ||
+                    (key === modelType?.toLowerCase())
+                );
+
+            if (modelTypeInternalKey && this.downloadModelTypeSelect.querySelector(`option[value="${modelTypeInternalKey}"]`)) {
+                this.downloadModelTypeSelect.value = modelTypeInternalKey;
+                console.log(`Auto-detected model type from preview: ${modelType} -> ${modelTypeInternalKey}`);
+            }
+        }
 
         const placeholder = PLACEHOLDER_IMAGE_URL;
         const onErrorScript = `this.onerror=null; this.src='${placeholder}'; this.style.backgroundColor='#444';`;
@@ -1056,7 +1091,7 @@ class CivitaiDownloaderUI {
             <div class="civitai-search-item" style="background-color: var(--comfy-input-bg);"> <!-- Style override for clarity -->
                 <div class="civitai-thumbnail-container">
                     <img src="${thumbnail}" alt="${modelName} thumbnail" class="civitai-search-thumbnail" loading="lazy" onerror="${onErrorScript}">
-                    <div class="civitai-type-badge">${modelType}</div>
+                    <div class="civitai-type-badge">${modelTypeInternalKey || modelType}</div>
                 </div>
                 <div class="civitai-search-info">
                     <h4>${modelName} <span style="font-weight: normal; font-size: 0.9em;">by ${creator}</span></h4>
@@ -1072,7 +1107,7 @@ class CivitaiDownloaderUI {
                     <p style="font-weight: bold; margin-top: 10px;">主要文件:</p>
                     <p style="font-size: 0.9em; color: #ccc;">
                         名称: ${fileInfo.name || 'N/A'}<br>
-                        尺寸: ${this.formatBytes(fileInfo.size_kb * 1024) || 'N/A'} <br> <!-- Convert KB to bytes for formatter -->
+                        大小: ${this.formatBytes(fileInfo.size_kb * 1024) || 'N/A'} <br> <!-- Convert KB to bytes for formatter -->
                         格式: ${fileInfo.format || 'N/A'}
                     </p>
                      <a href="${civitaiLink}" target="_blank" rel="noopener noreferrer" class="civitai-button small" title="在Civitai网站上查看" style="margin-top: 5px; display: inline-block;">
@@ -1180,16 +1215,21 @@ class CivitaiDownloaderUI {
 
         // No need for separate validation here, done in event listener
 
+        // Helper function to get array or empty array based on select value
+        const getSelectedValues = (selectElement) => {
+            const value = selectElement.value;
+            return value === 'any' ? [] : [value];
+        };
+
         const params = {
             query: this.searchQueryInput.value.trim(),
-            // Send selected *internal type key* (e.g., "lora") or empty array for "any"
-            // Backend will map this key to the correct API type name (e.g., "LORA")
-            model_types: this.searchTypeSelect.value === 'any' ? [] : [this.searchTypeSelect.value],
-            // Send selected *base model name* (e.g., "SD 1.5") or empty array for "any"
-            base_models: this.searchBaseModelSelect.value === 'any' ? [] : [this.searchBaseModelSelect.value],
-            sort: this.searchSortSelect.value, // Send display value (e.g., "Most Downloaded")
+            model_types: getSelectedValues(this.searchTypeSelect),
+            base_models: getSelectedValues(this.searchBaseModelSelect),
+            sort: this.searchSortSelect.value,
+            nsfw: this.searchNsfwCheckbox.checked,
             limit: this.searchPagination.limit,
-            page: this.searchPagination.currentPage,
+            page: 1,
+            total_items: parseInt(this.searchTotalItemsInput.value, 10) || 20,
             api_key: this.settings.apiKey,
         };
 
@@ -1200,8 +1240,16 @@ class CivitaiDownloaderUI {
                 throw new Error("从搜索API接收到无效数据。");
             }
 
-            this.renderSearchResults(response.items); // Pass only the items array to render function
-            this.renderSearchPagination(response.metadata); // Pass metadata object
+            // Cache the search results
+            this.searchCache = {
+                items: response.items,
+                metadata: response.metadata,
+                searchParams: params
+            };
+
+            // Reset to page 1 and render first page
+            this.searchPagination.currentPage = 1;
+            this.handleSearchPagination(1);
 
         } catch (error) {
             const message = `搜索失败: ${error.details || error.message || '未知错误'}`;
@@ -1217,39 +1265,35 @@ class CivitaiDownloaderUI {
 
     handleSettingsSave() {
         console.log("Saving settings...");
-        // 1. Read values from UI elements
+
+        // Helper function to validate numeric input
+        const validateNumericInput = (value, min, max, fieldName) => {
+            const num = parseInt(value, 10);
+            if (isNaN(num) || num < min || num > max) {
+                this.showToast(`${fieldName}无效（必须是${min}-${max}）。设置未保存。`, "error");
+                return null;
+            }
+            return num;
+        };
+
+        // Read and validate values
         const apiKey = this.settingsApiKeyInput.value.trim();
-        const numConnections = parseInt(this.settingsConnectionsInput.value, 10);
-        const defaultModelType = this.settingsDefaultTypeSelect.value;
-        const autoOpenStatusTab = this.settingsAutoOpenCheckbox.checked;
-        // const searchLimit = parseInt(this.settingsSearchResultLimitInput.value, 10); // If limit setting was added
+        const numConnections = validateNumericInput(this.settingsConnectionsInput.value, 1, 16, "默认连接数");
 
-        // 2. Basic Validation
-        if (isNaN(numConnections) || numConnections < 1 || numConnections > 16) {
-            this.showToast("默认连接数无效（必须是1-16）。设置未保存。", "error");
-            // Optional: visually indicate error on the input field
-            return; // Stop saving
-        }
-        // if (isNaN(searchLimit) || searchLimit < 5 || searchLimit > 50) { // If limit added
-        //     this.showToast("Invalid Search Limit (must be 5-50). Settings not saved.", "error");
-        //     return;
-        // }
-        if (!this.settingsDefaultTypeSelect.querySelector(`option[value="${defaultModelType}"]`)) {
-            this.showToast("选择的默认模型类型无效。设置未保存。", "error");
-            return;
+        if (numConnections === null) {
+            return; // Stop saving if validation failed
         }
 
-        // 3. Update the internal 'this.settings' object
-        this.settings.apiKey = apiKey;
-        this.settings.numConnections = numConnections;
-        this.settings.defaultModelType = defaultModelType;
-        this.settings.autoOpenStatusTab = autoOpenStatusTab;
-        // this.settings.searchResultLimit = searchLimit; // If limit added
+        // Update settings
+        Object.assign(this.settings, {
+            apiKey,
+            numConnections,
+            defaultModelType: 'checkpoint',
+            autoOpenStatusTab: this.settingsAutoOpenCheckbox.checked
+        });
 
-        // 4. Save the updated 'this.settings' object to cookie
+        // Save and apply
         this.saveSettingsToCookie();
-
-        // 5. Re-apply settings to potentially update other parts of the UI (like download tab defaults)
         this.applySettings();
     }
 
@@ -1369,34 +1413,10 @@ class CivitaiDownloaderUI {
     }
 
     formatSpeed(bytesPerSecond) {
-        if (!isFinite(bytesPerSecond) || bytesPerSecond < 0) return ''; // Return empty string or 'N/A' for invalid speed
-        // if (bytesPerSecond < 10) return ''; // Don't show tiny speeds? Maybe confusing.
+        if (!isFinite(bytesPerSecond) || bytesPerSecond < 0) return '';
 
         // Use formatBytes for consistency, adding '/s'
-        if (bytesPerSecond < 1024) {
-            return this.formatBytes(bytesPerSecond, 0) + '/s';
-        }
-        const k = 1024;
-        const sizes = [' KB/s', ' MB/s', ' GB/s', ' TB/s']; // Suffixes include space and unit
-        const i = Math.max(0, Math.min(sizes.length - 1, Math.floor(Math.log(bytesPerSecond) / Math.log(k)) - 1)); // Adjust index for KB start
-
-        let value = bytesPerSecond / Math.pow(k, i + 1);
-        let decimals = (i === 0) ? 1 : 2; // 1 decimal for KB/s, 2 for MB/s+
-
-        // Handle very small fractions (e.g., 0.002 MB/s should show as KB/s)
-        if (i > 0 && value < 0.1) {
-            value = bytesPerSecond / Math.pow(k, i); // Go back one unit (e.g., to KB)
-            decimals = 1;
-            i--; // Adjust index back
-        } else if (value < 1 && i > 0) { // Show 1 decimal if value is < 1 (e.g., 0.8 MB/s)
-            decimals = 1;
-        } else if (value >= 10) { // Show 1 decimal if value is >= 10 (e.g., 12.3 MB/s)
-            decimals = 1;
-        } else if (value >= 100) { // Show 0 decimals if >= 100 (e.g., 150 MB/s)
-            decimals = 0;
-        }
-
-        return value.toFixed(decimals) + sizes[i];
+        return this.formatBytes(bytesPerSecond, 0) + '/s';
     }
 
     renderDownloadList(items, container, emptyMessage) {
@@ -1595,25 +1615,27 @@ class CivitaiDownloaderUI {
         // console.log("Rendering Meili results:", items); // Debug: Log items received
 
         items.forEach(hit => {
-            // --- Safely extract data from Meili hit object ---
+            // --- Safely extract data from API response object ---
             const modelId = hit.id;
             if (!modelId) {
                 console.warn("Skipping search result with missing ID:", hit);
                 return; // Skip if essential ID is missing
             }
-            const creator = hit.user?.username || 'Unknown Creator';
-            const modelName = hit.name || 'Untitled Model';
-            const modelTypeApi = hit.type || 'N/A'; // API Type (e.g., LORA, Checkpoint)
-            const stats = hit.metrics || {}; // Top-level metrics
-            const tags = hit.tags?.map(t => t.name) || []; // Extract just the tag names
 
-            // Thumbnail URL (pre-processed by backend)
-            const thumbnailUrl = hit.thumbnailUrl || placeholder;
-            const thumbnailType = hit.images[0].type
+            // Only support Official API format
+            let creator, modelName, modelTypeApi, stats, tags, thumbnailUrl, allVersions, primaryVersion;
+            creator = hit.creator?.username || 'Unknown Creator';
+            modelName = hit.name || 'Untitled Model';
+            modelTypeApi = hit.type || 'N/A';
+            stats = hit.stats || {};
+            tags = hit.tags || [];
+            thumbnailUrl = hit.thumbnailUrl || placeholder;
+
+            // Official API has modelVersions array
+            allVersions = hit.modelVersions || [];
+            primaryVersion = allVersions.length > 0 ? allVersions[0] : {};
 
             // --- Version Info ---
-            const allVersions = hit.versions || []; // Array of all available versions
-            const primaryVersion = hit.version || (allVersions.length > 0 ? allVersions[0] : {}); // Primary version details provided directly, fallback to first in array
             const primaryVersionId = primaryVersion.id;
             const primaryBaseModel = primaryVersion.baseModel || 'N/A'; // Base model from primary version
 
@@ -1623,21 +1645,25 @@ class CivitaiDownloaderUI {
                 : (primaryBaseModel !== 'N/A' ? [primaryBaseModel] : []); // Fallback to primary if array empty
             const baseModelsDisplay = uniqueBaseModels.length > 0 ? uniqueBaseModels.join(', ') : 'N/A';
 
-            // --- Latest Update Date ---
-            let lastUpdatedFormatted = 'N/A';
-            const publishedAt = hit.publishedAt; // Use publishedAt from main hit
-            if (publishedAt) {
+            // --- Version Creation Date ---
+            const versionCreatedAt = (() => {
+                if (allVersions.length === 0) return 'N/A';
+
+                const latestVersion = allVersions[allVersions.length - 1];
+                const publishedAt = latestVersion.publishedAt || latestVersion.createdAt;
+
+                if (!publishedAt) return 'N/A';
+
                 try {
                     const date = new Date(publishedAt);
-                    // Use a more standard locale format
-                    lastUpdatedFormatted = date.toLocaleDateString(undefined, { // undefined uses user's locale
+                    return date.toLocaleDateString(undefined, {
                         year: 'numeric', month: 'short', day: 'numeric'
                     });
                 } catch (e) {
-                    console.error(`Error parsing date for model ${modelId}:`, publishedAt, e);
-                    lastUpdatedFormatted = 'Invalid Date';
+                    console.error(`Error parsing version published date for model ${modelId}:`, publishedAt, e);
+                    return 'Invalid Date';
                 }
-            }
+            })();
 
             // --- Create List Item ---
             const listItem = document.createElement('div');
@@ -1665,8 +1691,8 @@ class CivitaiDownloaderUI {
                 }
             });
 
-            // Generate HTML for initially visible version buttons
-            let versionButtonsHtml = visibleVersions.map(version => {
+            // Helper function to generate version button HTML
+            const generateVersionButton = (version) => {
                 const versionId = version.id;
                 const versionName = version.name || 'Unknown Version';
                 const baseModel = version.baseModel || 'N/A';
@@ -1679,7 +1705,10 @@ class CivitaiDownloaderUI {
                         <span class="base-model-badge">${baseModel}</span> ${versionName} <i class="fas fa-download"></i>
                     </button>
                 `;
-            }).join(''); // Join the HTML strings
+            };
+
+            // Generate HTML for initially visible version buttons
+            const versionButtonsHtml = visibleVersions.map(generateVersionButton).join('');
 
             // --- "All/More Versions" Button Logic ---
             const hasMoreVersions = allVersions.length > visibleVersions.length;
@@ -1694,56 +1723,43 @@ class CivitaiDownloaderUI {
             ` : '';
 
             // --- Hidden Versions Container ---
-            let allVersionsHtml = '';
-            if (hasMoreVersions) {
-                // Get versions that are not already visible
+            const allVersionsHtml = hasMoreVersions ? (() => {
                 const hiddenVersions = allVersions.filter(v => !visibleVersions.some(vis => vis.id === v.id));
-                allVersionsHtml = `
+                return `
                     <div class="all-versions-container" id="all-versions-${modelId}" style="display: none;">
-                        ${hiddenVersions.map(version => {
-                    const versionId = version.id;
-                    const versionName = version.name || 'Unknown Version';
-                    const baseModel = version.baseModel || 'N/A';
-                    return `
-                                <button class="civitai-button primary small civitai-search-download-button"
-                                        data-model-id="${modelId}"
-                                        data-version-id="${versionId || ''}"
-                                        data-model-type="${modelTypeApi || ''}"
-                                        ${!versionId ? 'disabled title="Version ID missing, cannot pre-fill"' : 'title="Pre-fill Download Tab"'} >
-                                    <span class="base-model-badge">${baseModel}</span> ${versionName} <i class="fas fa-download"></i>
-                                </button>
-                            `;
-                }).join('')}
+                        ${hiddenVersions.map(generateVersionButton).join('')}
                     </div>
                 `;
-            }
+            })() : '';
 
             let thumbnailHtml = '';
             const videoTitle = `Video preview for ${modelName}`;
             const imageAlt = `${modelName} thumbnail`;
 
-            if (thumbnailUrl && typeof thumbnailUrl === 'string' && thumbnailType == "video") {
-                thumbnailHtml = `
-                    <video class="civitai-search-thumbnail"
-                           src="${thumbnailUrl}"
-                           autoplay loop muted playsinline
-                           title="${videoTitle}"
-                           onerror="console.error('Failed to load video preview:', this.src)">
-                           <!-- Optional: Fallback message if video tag not supported -->
-                           Your browser does not support the video tag.
-                    </video>
-                `;
-            } else {
-                // It's likely an IMAGE or missing, render IMG tag with fallback
-                const effectiveThumbnailUrl = thumbnailUrl || placeholder; // Use placeholder if URL is missing
-                thumbnailHtml = `
-                    <img src="${effectiveThumbnailUrl}"
-                         alt="${imageAlt}"
-                         class="civitai-search-thumbnail"
-                         loading="lazy"
-                         onerror="${onErrorScript}">
-                `;
+            // Always render as image (Civitai thumbnails are images)
+            let effectiveThumbnailUrl = thumbnailUrl || placeholder; // Use placeholder if URL is missing
+
+            // Handle video files - skip them and use placeholder
+            if (effectiveThumbnailUrl) {
+                const videoPattern = /\.(webm|mp4|avi|mov|mkv|flv|wmv|m4v|3gp|ogv)$/i;
+                if (videoPattern.test(effectiveThumbnailUrl)) {
+                    effectiveThumbnailUrl = placeholder;
+                }
             }
+
+            // Add cache busting parameter to prevent browser caching
+            if (effectiveThumbnailUrl && effectiveThumbnailUrl !== placeholder) {
+                const separator = effectiveThumbnailUrl.includes('?') ? '&' : '?';
+                effectiveThumbnailUrl = `${effectiveThumbnailUrl}${separator}t=${Date.now()}`;
+            }
+
+            thumbnailHtml = `
+                <img src="${effectiveThumbnailUrl}"
+                     alt="${imageAlt}"
+                     class="civitai-search-thumbnail"
+                     loading="lazy"
+                     onerror="${onErrorScript}">
+            `;
 
             // --- Construct Final Inner HTML for the List Item ---
             listItem.innerHTML = `
@@ -1753,14 +1769,14 @@ class CivitaiDownloaderUI {
                 <div class="civitai-search-info">
                     <h4>${modelName}</h4>
                     <div class="civitai-search-meta-info">
-                        <span title="Creator: ${creator}"><i class="fas fa-user"></i> ${creator}</span>
-                        <span title="Base Models: ${baseModelsDisplay}"><i class="fas fa-layer-group"></i> ${baseModelsDisplay}</span>
-                        <span title="Published: ${lastUpdatedFormatted}"><i class="fas fa-calendar-alt"></i> ${lastUpdatedFormatted}</span>
+                        <span title="创作者: ${creator}"><i class="fas fa-user"></i> ${creator}</span>
+                        <span title="基础模型: ${baseModelsDisplay}"><i class="fas fa-layer-group"></i> ${baseModelsDisplay}</span>
+                        <span title="版本创建: ${versionCreatedAt}"><i class="fas fa-calendar-alt"></i> ${versionCreatedAt}</span>
                     </div>
                     <div class="civitai-search-stats" title="Stats: Downloads / Rating (Count) / Likes">
                         <span title="下载"><i class="fas fa-download"></i> ${stats.downloadCount?.toLocaleString() || 0}</span>
                         <span title="喜欢"><i class="fas fa-thumbs-up"></i> ${stats.thumbsUpCount?.toLocaleString() || 0}</span>
-                        <span title="收藏"><i class="fas fa-archive"></i> ${stats.collectedCount?.toLocaleString() || 0}</span>
+                        <span title="评论"><i class="fas fa-comments"></i> ${stats.commentCount?.toLocaleString() || 0}</span>
                         <span title="热度"><i class="fas fa-bolt"></i> ${stats.tippedAmountCount?.toLocaleString() || 0}</span>
 
                     </div>
@@ -1804,29 +1820,38 @@ class CivitaiDownloaderUI {
             return;
         }
 
-        if (!metadata || !metadata.totalPages || metadata.totalPages <= 1) {
-            this.searchPaginationContainer.innerHTML = ''; // Clear if no pagination needed
-            // Update internal state even if not rendering
-            this.searchPagination.currentPage = metadata?.currentPage || 1;
-            this.searchPagination.totalPages = metadata?.totalPages || 1;
-            this.searchPagination.totalItems = metadata?.totalItems || 0;
+        // Debug: Log metadata to understand pagination data
+        console.log("[Civicomfy] Search pagination metadata:", metadata);
+
+        // Handle standard pagination
+        if (!metadata) {
+            console.log("[Civicomfy] No metadata available");
+            this.searchPaginationContainer.innerHTML = '';
             return;
         }
 
-        // --- Extract pagination data ---
-        const currentPage = metadata.currentPage;
-        const totalPages = metadata.totalPages;
-        const totalItems = metadata.totalItems;
-        // Limit is taken from internal state `this.searchPagination.limit` as metadata.pageSize reflects the *requested* limit
-        const limit = this.searchPagination.limit;
+        const currentPage = metadata.currentPage || 1;
+        const totalPages = metadata.totalPages || 1;
+        const totalItems = metadata.totalItems || 0;
 
-        // Update internal state (important for next search submit)
+        // Only show pagination if there are multiple pages
+        if (totalPages <= 1) {
+            console.log("[Civicomfy] No pagination needed - only one page");
+            this.searchPaginationContainer.innerHTML = '';
+            // Update internal state
+            this.searchPagination.currentPage = currentPage;
+            this.searchPagination.totalPages = totalPages;
+            this.searchPagination.totalItems = totalItems;
+            return;
+        }
+
+        // --- Handle standard pagination ---
+        // Update internal state
         this.searchPagination.currentPage = currentPage;
         this.searchPagination.totalPages = totalPages;
         this.searchPagination.totalItems = totalItems;
 
         const fragment = document.createDocumentFragment();
-        const maxButtons = 5; // Max number page buttons (e.g., 1 ... 4 5 6 ... 10)
 
         // Helper to create buttons (reusable)
         const createButton = (text, page, isDisabled = false, isCurrent = false) => {
@@ -1841,71 +1866,19 @@ class CivitaiDownloaderUI {
         };
 
         // --- Previous Button ---
-        fragment.appendChild(createButton('&laquo; Prev', currentPage - 1, currentPage === 1));
+        fragment.appendChild(createButton('&laquo; 上一页', currentPage - 1, currentPage === 1));
 
-        // --- Page Number Buttons Logic ---
-        let startPage, endPage;
-        if (totalPages <= maxButtons + 2) { // Show all page numbers if total is small enough
-            startPage = 1;
-            endPage = totalPages;
-        } else {
-            // Calculate pages to show around the current page
-            const maxSideButtons = Math.floor((maxButtons - 1) / 2); // e.g., maxButtons=5 -> maxSide=2 -> shows Current-2, Current-1, Current, Current+1, Current+2
-
-            if (currentPage <= maxButtons - maxSideButtons) {
-                // Near the start: Show 1, 2, 3, 4, 5 ... LastPage
-                startPage = 1;
-                endPage = maxButtons;
-            } else if (currentPage >= totalPages - (maxButtons - maxSideButtons - 1)) {
-                // Near the end: Show FirstPage ... Last-4, Last-3, Last-2, Last-1, Last
-                startPage = totalPages - maxButtons + 1;
-                endPage = totalPages;
-            } else {
-                // In the middle: Show FirstPage ... Current-2, Current-1, Current, Current+1, Current+2 ... LastPage
-                startPage = currentPage - maxSideButtons;
-                endPage = currentPage + maxSideButtons;
-            }
-        }
-
-        // Add First page button and ellipsis if needed
-        if (startPage > 1) {
-            fragment.appendChild(createButton('1', 1)); // Always show first page
-            if (startPage > 2) {
-                // Add ellipsis if there's a gap between '1' and the startPage sequence
-                const ellipsis = document.createElement('span');
-                ellipsis.className = 'civitai-pagination-ellipsis';
-                ellipsis.textContent = '...';
-                fragment.appendChild(ellipsis);
-            }
-        }
-
-        // Add the calculated range of page number buttons
-        for (let i = startPage; i <= endPage; i++) {
-            fragment.appendChild(createButton(i.toString(), i, false, i === currentPage));
-        }
-
-        // Add Ellipsis and Last page button if needed
-        if (endPage < totalPages) {
-            if (endPage < totalPages - 1) {
-                // Add ellipsis if there's a gap between the endPage sequence and the LastPage
-                const ellipsis = document.createElement('span');
-                ellipsis.className = 'civitai-pagination-ellipsis';
-                ellipsis.textContent = '...';
-                fragment.appendChild(ellipsis);
-            }
-            fragment.appendChild(createButton(totalPages.toString(), totalPages)); // Always show last page if needed
-        }
+        // --- Current Page Indicator ---
+        const pageIndicator = document.createElement('span');
+        pageIndicator.className = 'civitai-pagination-info';
+        pageIndicator.textContent = `第 ${currentPage} 页`;
+        fragment.appendChild(pageIndicator);
 
         // --- Next Button ---
-        fragment.appendChild(createButton('Next &raquo;', currentPage + 1, currentPage === totalPages));
+        fragment.appendChild(createButton('下一页 &raquo;', currentPage + 1, currentPage >= totalPages));
 
-        // --- Display Total Items and Page Info ---
-        if (totalItems > 0) {
-            const info = document.createElement('div');
-            info.className = 'civitai-pagination-info'; // Add class for styling
-            info.textContent = `Page ${currentPage} of ${totalPages} (${totalItems.toLocaleString()} total models)`;
-            fragment.appendChild(info);
-        }
+        // --- Display Items Info ---
+        // Removed "每页 X 项" display as requested
 
         // --- Update the DOM ---
         this.searchPaginationContainer.innerHTML = ''; // Clear previous pagination controls
@@ -1915,6 +1888,37 @@ class CivitaiDownloaderUI {
         // in setupEventListeners, targeting '.civitai-page-button'.
 
     } // End renderSearchPagination method
+
+    // New method to handle pagination using cached results
+    handleSearchPagination(page) {
+        if (!this.searchCache.items || this.searchCache.items.length === 0) {
+            console.log("[Civicomfy] No cached search results available");
+            return;
+        }
+
+        const itemsPerPage = this.searchPagination.limit;
+        const startIndex = (page - 1) * itemsPerPage;
+        const endIndex = startIndex + itemsPerPage;
+        const pageItems = this.searchCache.items.slice(startIndex, endIndex);
+
+        // Update current page
+        this.searchPagination.currentPage = page;
+
+        // Render the page items
+        this.renderSearchResults(pageItems);
+
+        // Update pagination controls
+        const metadata = this.searchCache.metadata;
+        if (metadata) {
+            metadata.currentPage = page;
+            this.renderSearchPagination(metadata);
+        }
+
+        // Scroll to top of search results for better viewing
+        if (this.searchResultsContainer) {
+            this.searchResultsContainer.scrollIntoView({ behavior: 'instant', block: 'start' });
+        }
+    }
 
     // --- Modal Control ---
 
@@ -1981,20 +1985,7 @@ class CivitaiDownloaderUI {
         }, duration);
     }
 
-    // Helper to add FontAwesome if needed (run once)
-    ensureFontAwesome() {
-        if (!document.getElementById('civitai-fontawesome-link')) {
-            const faLink = document.createElement('link');
-            faLink.id = 'civitai-fontawesome-link';
-            faLink.rel = 'stylesheet';
-            faLink.href = 'https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/all.min.css';
-            faLink.integrity = 'sha512-1ycn6IcaQQ40/MKBW2W4Rhis/DbILU74C1vSrLJxCq57o941Ym01SwNsOMqvEBFlcgUa6xLiPY/NS5R+E6ztJQ=='; // Add integrity hash
-            faLink.crossOrigin = 'anonymous';
-            faLink.referrerPolicy = 'no-referrer';
-            document.head.appendChild(faLink);
-            console.log("[Civicomfy] FontAwesome loaded.");
-        }
-    }
+
 
 } // End of CivitaiDownloaderUI class
 
